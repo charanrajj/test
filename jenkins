@@ -1,0 +1,357 @@
+Jenkins Documentation
+
+Jenkins is an open-source automation server that lets you flexibly orchestrate your build, test, and deployment pipelines. We use jenkins pipeline to pull the code from git ,create a docker image of the code, connect to the kubernetes cluster and deploy the microservice in the form of pod in kubernetes.
+
+Steps for jenkins pipeline:
+
+1) Prerequisites:
+
+Java 8
+https://www.digitalocean.com/community/tutorials/how-to-install-java-with-apt-on-ubuntu-18-04#installing-specific-versions-of-openjdk
+ 
+ Have docker installed in your machine: 
+ For linux: https://docs.docker.com/install/linux/docker-ce/ubuntu/
+
+
+Have google sdk for GCP and kubectl installed.
+
+https://cloud.google.com/sdk/ 
+https://kubernetes.io/docs/tasks/tools/install-kubectl
+
+
+2)  Install jenkins
+           https://www.digitalocean.com/community/tutorials/how-to-install-jenkins-on-ubuntu-18-04
+
+3) Configure with username and required password
+
+4) There are some external plugins required for jenkins to access GCP and build pipeline. So we are installing few external plugins.
+ Go to the Manage Jenkins-> manage plugins install the following plugins:
+     
+Build Pipeline Plugin
+
+Docker plugin
+
+Email Extension
+
+GitHub plugin/ gitbucket
+
+Google Container Registry Auth Plugin
+
+Google OAuth Credentials
+
+OAuth Credentials plugin
+Pipeline Utility Steps
+
+
+5) Restart the jenkins so that the plugins installed will be affected - You will be able to see the check button to restart after installing.
+
+6) Create a jenkins user to docker group so that docker commands are able to run from the pipeline
+     
+    sudo groupadd docker
+    sudo usermod -aG docker jenkins
+
+7) Restart jenkins to take effect
+    sudo service jenkins restart
+
+
+8) For jenkins to access the gcp and bitbucket we need to create the credentials and then add it in the pipeline. Credentials are also used to keep the secret text like email id etc.
+
+Add the required credentials
+
+For adding bitbucket credentials:
+Credentials->Global credentials->add credentials-> username and password
+
+For email id( to be in secret key format)
+Credentials->Global credentials->add credentials->secret key-> fromemailid
+
+Once the credentials is added, the id will be generated which we will be using in our pipeline
+
+9) Add one more credential that is the .json file get from GCP service account:
+Link to create a service account json key (give the kubernetes developer role in the role section).
+https://www.magellanic-clouds.com/blocks/en/guide/create-gcp-service-account-key/ 
+
+Credentials->Global credentials->add credentials->Google Service Account from private key : upload the json file required (from kubernetes service account)
+
+10) Email configuration for the email to be sent after build:
+
+Go to Manage jenkins->Configure system
+Under E-mail Notification-> Click Advanced -> check Use SMTP Authentication-> Give the username and password of a less secure email id->add recipients in the reply to list->use ssl->port 465->under smtp server give smtp.gmail.com ->save
+
+11) Configure docker in jenkins
+Go to Manage Jenkins-> Global Tool Configuration-> Docker installations-> Add Docker-> Add the name docker-> Check the install automatically box->Apply and Save
+
+11) Create a new pipeline. 
+Go to 
+ New item->pipeline-> Give a name->Ok
+
+12) Add the below pipeline script in the pipeline:
+
+node{
+    currentBuild.result = "SUCCESS"
+    def dockerTool = tool name: 'docker', type: 'org.jenkinsci.plugins.docker.commons.tools.DockerTool'
+    try {
+    withEnv(["DOCKER=${dockerTool}/bin"]) {
+        stage('git checkout'){
+            checkout([$class: 'GitSCM',
+            branches: [[name: '*/master']],
+            userRemoteConfigs: [[credentialsId: '$your-id', url: 'URL-of-github']]])    ////add your credentials and the clone url of git hub
+            }
+     
+        stage('build and push image to registry') { 
+                echo 'Pushing to registry'
+                docker.withRegistry('https://gcr.io', 'gcr:firstsource') { 
+                
+                docker.build("gcr.io/path/image_name:version","--no-cache --pull -f Dockerfile .").push()     //change the repository and image name which is in your deployment file
+                }
+        }
+        stage('deploy to staging'){
+            withCredentials([file(credentialsId: 'secretfile-id', variable: 'any-variable-name')]) {  //change the id and variable
+            sh """
+            pwd
+            sudo gcloud auth activate-service-account --key-file=${variable-name-given}
+            sudo gcloud container clusters get-credentials stag-firstsource --zone asia-east1-a --project firstanalytics    ##// cluster connection command of your cluster 
+            
+            export GOOGLE_APPLICATION_CREDENTIALS=${variable-given}
+            
+            sudo kubectl delete deployment <deployment-name>  ## deployment name
+            cd /var/lib/jenkins/workspace/pipeline-name/K8
+            sudo kubectl apply -f <deployment-filename>.yaml   ## deployment file name
+            sudo kubectl get deployments
+            
+            
+            """
+            }
+          }
+          stage('trigger email notification'){
+
+              emailext attachLog: true, from: '${fromemailid}',body: "${currentBuild.result}: ${BUILD_URL}", compressLog: true, replyTo: '$DEFAULT_REPLYTO', subject: "Build Notification: ${JOB_NAME}-Dev-Build# ${BUILD_NUMBER} ${currentBuild.result}", to: '$DEFAULT_REPLYTO'
+           }
+    }
+    }
+        catch (err) {
+        currentBuild.result = "BUILD FAILURE"
+            emailext attachLog: true, from: '${fromemailid}',body: "${currentBuild.result}: ${BUILD_URL}", compressLog: true, replyTo: '$DEFAULT_REPLYTO', subject: "Build Notification: ${JOB_NAME}-Dev-Build# ${BUILD_NUMBER} ${currentBuild.result}", to: '$DEFAULT_REPLYTO'
+           throw err
+           }
+           cleanWs()
+}
+
+
+13) Click on build now
+
+
+User configurations to give specific permission to users:
+
+We can have multiple users in jenkins, so that we can create the users and give then access just for building purpose or viewing purpose and they don't change anything in configurations.
+
+Steps:
+
+Manage jenkins-> Configure global security-> Check Allow users to sign up under Security Realm->save
+Logout jenkins
+In the login page create a new account 
+Manage jenkins-> Configure global security-> Uncheck Allow users to sign up under Security Realm
+In the same page under authorization:
+Check matrix based security-> Add user or group -> add the username and tick for specific permissions->save
+
+
+
+Canary deployment:
+
+Canary deployment is required have proper code releases in production. In this we will be having 2 versions deployed in the production and split the traffic between the 2 versions. So that once we release a new version and then we can test it and then proceed to safe release. The idea is to first deploy the change to a small subset of servers, test it, and then roll the change out completely to production. The canary deployment serves as an early warning indicator with less impact on downtime.
+       
+Steps:
+
+We  should be having 2 deployment files with version1 and version2 as labels.
+ Sample deployment file: 
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+ name: analyze-v1
+spec:
+ replicas: 1
+ template:
+   metadata:
+     annotations:
+       traffic.sidecar.istio.io/excludeOutboundIPRanges: 0.0.0.0/0
+     labels:
+       app: analyze
+       version: v1
+   spec:
+     affinity:
+       nodeAffinity:
+         requiredDuringSchedulingIgnoredDuringExecution:
+           nodeSelectorTerms:
+           - matchExpressions:
+             - key: cloud.google.com/gke-preemptible
+               operator: Exists
+     containers:
+       - name: analyze
+         image: gcr.io/firstanalytics/firstsource-r-analyze-prod:tag
+         imagePullPolicy: Always
+         #resources:
+          #requests:
+           #memory: "200Mi"
+           #cpu: "100m"
+          #limits:
+           #memory: "400Mi"
+           #cpu: "300m"
+         ports:
+           - containerPort: 8000
+
+Create one more as version 2
+
+     2) In the istio virtual service and destination rules we have to make the   changes to route the traffic.
+
+Changes in virtual service to add the weight (traffic to be split) and subset in destination:
+
+
+
+route:
+   - destination:
+       host: ror-user-management
+       port:
+         number: 3002
+       subset: v1
+     weight: 20
+   - destination:
+       host: ror-user-management
+       port:
+         number: 3002
+       subset: v2
+     weight: 80
+
+
+Sample destination rules:
+
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+ name: backend
+spec:
+ host: backend-prod
+ subsets:
+ - name: v1
+   labels:
+     version: v1
+ - name: v2
+   labels:
+     version: v2
+
+
+     3) Then we have to have the pipeline for canary deployment and make changes in the actual pipeline for releases.
+
+Canary pipeline :
+
+Note: This is parameterized, need to add build with parameters. For that we need to check the “This project is parameterised” button. Select the choice parameter and give “CANARY” and give two choices Release and Revert.
+
+Pipeline:
+
+
+node {
+     stage('canary deployment'){
+     withCredentials([file(credentialsId: 'FIRSTSOURCE-ID', variable: 'firstsource')]) {
+     sh '''
+     sudo gcloud auth activate-service-account --key-file=${firstsource}
+     sudo gcloud container clusters get-credentials firstsource-production --zone asia-east1-a --project firstanalytics
+     export GOOGLE_APPLICATION_CREDENTIALS=${firstsource}
+     canary_tag=$(sudo kubectl get deployment rordeployment-v2 -o=jsonpath='{$.spec.template.spec.containers[:1].image}')
+     prod_tag=$(sudo kubectl get deployment rordeployment-v1 -o=jsonpath='{$.spec.template.spec.containers[:1].image}')
+     if [ "${CANARY}" = "Release" ];
+     then
+        echo $canary_tag
+        cd /home/deploy_files
+        sudo sed -i "s|gcr.io/firstanalytics/firstsource-backend-prod.*|$canary_tag|g" backend-v1-deployment.yaml
+        sudo kubectl apply -f backend-v1-deployment.yaml
+     else
+        echo $prod_tag
+        cd /home/deploy_files
+        sudo sed -i "s|gcr.io/firstanalytics/firstsource-backend-prod.*|$prod_tag|g" backend-v2-deployment.yaml
+        sudo kubectl apply -f backend-v2-deployment.yaml
+     fi
+    '''
+    }
+    }
+    }
+
+Microservice pipeline:
+
+Note: This is also parameterized, check the button “This project is parameterized” , select string parameter give it as “tag_version”.
+
+Pipeline:
+
+node{
+    echo "TAG VERSION ${tag_version}"
+    currentBuild.result = "SUCCESS"
+    def dockerTool = tool name: 'docker', type: 'org.jenkinsci.plugins.docker.commons.tools.DockerTool'
+    try {
+    withEnv(["DOCKER=${dockerTool}/bin"]) {
+            stage('Git push tag'){
+            checkout([$class: 'GitSCM',
+            branches: [[name: '*/master']],
+            userRemoteConfigs: [[credentialsId: 'b0610422-46ed-4d6b-9878-7698fbf78687', url: 'https://supriya_deepak@bitbucket.org/supriya_deepak/first-analytics-backend-production.git']]])  
+            sh '''
+            cd /var/lib/jenkins/workspace/Backend-ROR-prod
+            if [ $(git tag -l "${tag_version}") ]; then
+             echo "test"
+             error "Build failed because version number already exists"
+            else
+             echo "creating tag for the build"
+             git tag ${tag_version}
+             git push https://supriya_deepak:supriya111@bitbucket.org/supriya_deepak/first-analytics-backend-production.git  refs/tags/${tag_version}
+            fi
+            '''
+        }
+        stage('git checkout'){
+            checkout([$class: 'GitSCM',
+            branches: [[name: '*/master']],
+            userRemoteConfigs: [[credentialsId: 'b0610422-46ed-4d6b-9878-7698fbf78687', url: 'https://supriya_deepak@bitbucket.org/supriya_deepak/first-analytics-backend-production.git']]])
+            }
+     
+        stage('build and push image to registry') { 
+                echo 'Pushing to registry'
+                docker.withRegistry('https://gcr.io', 'gcr:firstsource') {
+                
+                docker.build("gcr.io/firstanalytics/firstsource-backend-prod:${tag_version}","--no-cache --pull -f Dockerfile .").push()
+                }
+        }
+        stage('deploy to staging'){
+            withCredentials([file(credentialsId: 'FIRSTSOURCE-ID', variable: 'firstsource')]) {
+            //
+            //sudo kubectl delete deployment rordeployment-v1
+            sh """
+            pwd
+            sudo gcloud auth activate-service-account --key-file=${firstsource}
+            sudo gcloud container clusters get-credentials firstsource-production --zone asia-east1-a --project firstanalytics
+            export GOOGLE_APPLICATION_CREDENTIALS=${firstsource}
+            sudo kubectl delete deployment rordeployment-v2
+            cd /var/lib/jenkins/workspace/Backend-ROR-prod/K8
+            sudo sed -i "s/tag/${tag_version}/g" rordeployment-v2.yaml
+            sudo kubectl apply -f rordeployment-v2.yaml
+            sudo kubectl get deployments
+            cd ..
+            sudo rm -rf Backend-ROR-prod
+            
+            """
+            //yes Y |sudo docker system prune --all
+            }
+          }
+          stage('trigger email notification'){
+
+              emailext attachLog: true, from: '${fromemailid}',body: "${currentBuild.result}: ${BUILD_URL}", compressLog: true, replyTo: '$DEFAULT_REPLYTO', subject: "Build Notification: ${JOB_NAME}-Dev-Build# ${BUILD_NUMBER} ${currentBuild.result}", to: '$DEFAULT_REPLYTO'
+           }
+    }
+    }
+        catch (err) {
+        currentBuild.result = "BUILD FAILURE"
+            emailext attachLog: true, from: '${fromemailid}',body: "${currentBuild.result}: ${BUILD_URL}", compressLog: true, replyTo: '$DEFAULT_REPLYTO', subject: "Build Notification: ${JOB_NAME}-Dev-Build# ${BUILD_NUMBER} ${currentBuild.result}", to: '$DEFAULT_REPLYTO'
+           throw err
+           }
+           cleanWs()
+}
+
+
+
+
+
+
+

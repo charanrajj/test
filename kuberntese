@@ -1,0 +1,212 @@
+GCP documentation
+
+Google Cloud Platform (GCP), offered by Google, is a suite of cloud computing services that runs on the same infrastructure that Google uses internally for its end-user products, such as Google Search and YouTube. Alongside a set of management tools, it provides a series of modular cloud services including computing, data storage, data analytics and machine learning.Google Cloud Platform provides infrastructure as a service, platform as a service, and serverless computing environments.
+ 
+To access GCP from cmd we need to install google cloud SDK and configure using below link.
+https://cloud.google.com/sdk/
+
+Below are the few resources that we are using in GCP
+
+VPC Network:
+
+“A Virtual Private Cloud (VPC) is a global private isolated virtual network partition that provides managed networking functionality for your Google Cloud Platform (GCP) resources.”
+You can think of a VPC as a virtual version of your traditional physical network. VPCs are global, spanning all regions. The instances within the VPC have internal IP addresses and can communicate privately with each other across the globe. This logical representation of your network infrastructure abstracts much of the complexities of dealing with on-premises architectures.
+
+
+
+Create a VPC network:
+
+Visit the VPC networks page in the GCP Console. 
+Click Create VPC Network.
+For Name, enter name.
+Under Subnet creation mode, select Automatic.
+Select regional or global based on your preference
+Click Create.
+
+Kubernetes cluster:
+
+Kubernetes Engine is a hosted version of Kubernetes, a powerful cluster manager and orchestration system for containers. We will be having all our microservices deployed in the form of pods in the kubernetes cluster.
+
+Preemptive nodes in kubernetes cluster reduces the cost upto 80% for that particular cluster, but with a downtime that may or may not occur once in 24 hours.
+
+Creating a kubernetes cluster:
+
+Reference Link:
+https://cloud.google.com/kubernetes-engine/docs/how-to/creating-a-cluster
+
+Go to ->Hamburger icon(Navigation menu)->Kubernetes engine->create cluster-> 
+Specify name
+Zone (prefered zone is us-central1-a)
+Given specific number of node pools
+In more node options enable preemptible nodes(preferred) (https://cloud.google.com/compute/docs/instances/preemptible)
+
+In the networking option enable VPC->Check Enable VPC-native ->Specify the network created above
+Under network security->Check the private cluster and give 172.16.0.0/28 in the master ip range
+
+Click create
+We use deployment file for the pods to be deployed in the cluster and the service file is used for the pods to be exposed. Both the deployment and the service files are in the .yaml format.
+Reference:
+https://kubernetes.io/docs/concepts/workloads/controllers/deployment/
+To run the kubectl command you have to install kubectl in your machine:
+https://kubernetes.io/docs/tasks/tools/install-kubectl/
+Note:
+We can also have two or mode node pools in a kubernetes cluster, where you can have few pods deployed in preemptive node and few in non-preemptive.
+Steps:
+1) Create a node pool in a kubernetes cluster.
+https://cloud.google.com/kubernetes-engine/docs/how-to/node-pools
+2) Mention the pod to use this node pool.
+https://medium.com/google-cloud/using-preemptible-vms-to-cut-kubernetes-engine-bills-in-half-de2481b8e814
+
+Sample Deployment fille:
+Deployment file deploys the pod in the form of micro service
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+ name: rordeployment      #any deployment file
+spec:
+ replicas: 1             # no of replicas
+ template:
+   metadata:
+     annotations:
+      traffic.sidecar.istio.io/excludeOutboundIPRanges: 0.0.0.0/0
+     labels:
+       app: ror
+   spec:
+     containers:
+       - name: ror
+         image: gcr.io/firstanalytics/firstsource-backend-stag:v1.0.0  #image path from GCR
+         imagePullPolicy: Always
+         resources:
+          requests:
+           memory: "1Gi"                #Memory allocated
+           cpu: "150m"                 #CPU allocated
+          limits:
+           memory: "3Gi"               #Memory limit
+           cpu: "250m"                 #CPU limit
+         ports:
+           - containerPort: 3000
+
+
+Sample Service file:
+Service file is required to expose the service
+kind: Service
+apiVersion: v1
+metadata:
+ name: backendservice        #service name to be given
+spec:
+ selector:
+   app: ror                 #the app name specified in deployment file
+ ports:
+   - protocol: "TCP"        #protocol
+     # Port accessible inside cluster
+     port: 3000             #port specified 
+     # Port to forward to inside the pod
+     targetPort: 3000
+     # Port accessible outside cluster
+     nodePort: 30005
+ type: LoadBalancer      # used to get an external ip to the service
+
+Cloud NAT
+Cloud NAT (network address translation) allows Google Cloud Platform (GCP) virtual machine (VM) instances without external IP addresses and private Google Kubernetes Engine (GKE) clusters to connect to the Internet.
+Cloud NAT implements outbound NAT in conjunction with a default route to allow your instances to reach the Internet. It does not implement inbound NAT. Hosts outside of your VPC network can only respond to established connections initiated by your instances; they cannot initiate their own, new connections to your instances via NAT.
+Cloud NAT is a regional resource. You can configure it to allow traffic from all primary and secondary IP ranges of subnets in a region, or you can configure it to apply to only some of those ranges.
+Create a nat-gateway:
+Go to Cloud NAT-> Create a NAT Gateway->Give a name,Select VPC created-> Cloud router (create a new router for that vpc)-> Create
+Reference link:
+https://medium.com/bluekiri/high-availability-nat-gateway-at-google-cloud-platform-with-cloud-nat-8a792b1c4cc4
+
+
+Compute Engine
+Google Compute Engine (GCE) is an Infrastructure as a Service (IaaS) offering that allows clients to run workloads on Google's physical hardware. These are the VM instances. 
+Create a Compute Engine for build machine:
+Go to the VM instances page.
+Select your project and click Continue.
+Click the Create instance button.
+Specify a Name for your instance.
+Optionally, change the Zone for this instance.
+Select a Machine type for your instance.
+To permit HTTP or HTTPS traffic to the VM instance, select Allow HTTP traffic or Allow HTTPS traffic.
+Click the Create button to create and start the instance.
+
+Reference Link:
+https://cloud.google.com/compute/docs/instances/create-start-instance
+
+Enabling autoscaling:
+Autoscaling is required when you need more resources for the application, in case of heavy load.
+Vertical autoscaling where we can edit the kubernetes cluster and enable the autoscaling by specifying minimum and maximum pods.
+Horizontal Autoscaling where we can autoscale at a pod level, using this command
+kubectl autoscale deployment my-app --max 6 --min 4 --cpu-percent 50
+Example usage:
+Have 2-3 replicas by horizontal auto scaling when there is too much load.
+In some cases like for R system which is single threaded, one pod/container is occupied by one process, so we need to have multiple containers. In this kind of situation we will need to autoscale based on number of requests. In destination rules you can specify the traffic to be distributed based on round-robin, random or least requests. By default its round-robin.
+
+Stackdriver:
+Google Stackdriver is a service offered by Google for monitoring purpose. It provides performance and diagnostics data (in the form of monitoring, logging, tracing, error reporting, and alerting) to public cloud users. Stackdriver is a hybrid cloud solution, providing support for both Google Cloud and AWS cloud environments.
+
+Enable stackdriver:
+ Go to the link:
+https://app.google.stackdriver.com
+
+In the drop down top left corner-> create workspace-> add your project
+
+Go to Dashboard-> Create Dashboard->create the charts required by clicking on Add charts
+
+Storage bucket:
+Google Cloud Storage is a RESTful online file storage web service for storing and accessing data on Google Cloud Platform infrastructure. 
+Creating a bucket:
+Go to the storage and create a storage bucket.
+
+IAM roles:
+Google Cloud Platform (GCP) offers Cloud IAM, which lets you manage access control by defining who (identity) has what access (role) for which resource. With Cloud IAM you can grant granular access to specific GCP resources and prevent unwanted access to other resources.
+Create a role:
+IAM & Admin->IAM-> Add members->Select a role
+If you want the json key of the role:
+Service account->select the member-> create key
+
+Security implementations:
+
+Forseti security implementation:
+Forseti security is an Open-source security tools for GCP that lets you:
+Keep track of your environment
+Take inventory snapshots of your Google Cloud Platform (GCP) resources on a recurring cadence so that you always have a history of what was in your cloud.
+
+Monitor your policies
+Scan your GCP resources to ensure that access controls are set as you intended and protected against unsafe changes.
+
+Enforce rules
+Ensure the safest settings are in place for your most sensitive GCP resources.
+
+Understand your policies
+Gain visibility into your Cloud Identity and Access Management (Cloud IAM) policies and answer key questions about who has what access to which resources.
+
+Requires organization access for the project
+https://forsetisecurity.org/docs/latest/setup/kubernetes.html
+Note: It gives two regular compute engine and one cloud SQL which adds to the cost.
+ 
+
+Binary Authorization:
+Binary Authorization is a deploy-time security control that ensures only trusted container images are deployed on Google Kubernetes Engine (GKE). With Binary Authorization, you can require images to be signed by trusted authorities during the development process and then enforce signature validation when deploying. By enforcing validation, you can gain tighter control over your container environment by ensuring only verified images are integrated into the build-and-release process.
+Steps:
+Enable the Binary authorization Api
+Click on the edit option for kubernetes cluster-> enable binary authorization-> save
+Go to Security->binary authorization->Create an attestor
+Go to Security->binary authorization->Create a policy(refer the below link for creating policy)
+Allow only attested images
+Exempt the images that are used by adding the image paths in the Images exempt from policy
+You can also have cluster specific policy which does not follow the Project default rule.
+
+Reference link:
+https://cloud.google.com/binary-authorization/docs/
+
+
+Cloud Security Command Center
+Cloud Security Command Center (Cloud SCC) is the canonical security and risk database for Google Cloud Platform (GCP). Cloud SCC is an intuitive, intelligent risk dashboard and analytics system for surfacing, understanding, and remediating GCP security and data risks across an organization.
+Pre requisites:
+You need to have the organization set up for the project with Organization Admin and Security center admin role granted to you by the organization account holder.
+Steps:
+Security-> Enable Security Command Center-> Select for projects for which SCC needs to be enabled
+Go to settings->Security sources-> Enable Cloud Anomaly Detection, Cloud Security Scanner, Cloud DLP Data Discovery
+In the Assets you can see the list of assets based on projects or resource
+In the findings you an see if there is any threat detections
+
+

@@ -1,0 +1,247 @@
+Istio implementation
+
+About Istio
+
+It is a completely open source service mesh that layers transparently onto existing distributed applications. It is also a platform, including APIs that let it integrate into any logging platform, or telemetry or policy system. Istio’s diverse feature set lets you successfully, and efficiently, run a distributed microservice architecture, and provides a uniform way to secure, connect, and monitor microservices.
+
+Prerequisites:
+A GCP kubernetes cluster
+
+Install istio on kubernetes:
+
+Copy the latest istio using curl command in the below link:
+https://cloud.google.com/kubernetes-engine/docs/tutorials/installing-istio
+
+Install using the below link
+
+Note in the below following installation link:
+Use : sudo kubectl apply -f install/kubernetes/istio-demo.yaml
+Do not use: kubectl apply -f install/kubernetes/istio-demo-auth.yaml 
+
+
+
+Get the istio ip using command:
+ kubectl get svc -n istio-system
+
+Enable istio injection and redeploy the pod
+
+This is to set enable istio for each microservice
+
+Command: c
+
+Have a virtual service and a gateway for istio:
+
+Gateway:
+An ingress Gateway describes a load balancer operating at the edge of the mesh that receives incoming HTTP/TCP connections. It configures exposed ports, protocols, etc. but, unlike Kubernetes Ingress Resources, does not include any traffic routing configuration. Traffic routing for ingress traffic is instead configured using Istio routing rules, exactly in the same way as for internal service requests.
+
+Virtual service:
+A VirtualService defines a set of traffic routing rules to apply when a host is addressed. Each routing rule defines matching criteria for traffic of a specific protocol. If the traffic is matched, then it is sent to a named destination service (or subset/version of it) defined in the registry.
+
+Prerequisites:
+
+Change the configuration in the code where microservice is integrated, with “istio-ip/any-prefix”.
+
+Reference link :
+https://istio.io/docs/reference/config/networking/v1alpha3/gateway/
+
+
+Sample gateway and virtual service file
+
+Sample gateway file without certificate:
+
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: frontend
+spec:
+  selector:
+    istio: ingressgateway # use istio default controller
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+
+Adding certificates in istio for https:
+
+1) Copy the ssl certificates in a folder and in the same folder run this command. 
+Note: You will need key file and cert file for certificates.
+kubectl create -n istio-system secret tls istio-ingressgateway-certs --key decrypted-key.key --cert certificate.crt
+
+2) Check if certificate has been created
+kubectl exec -it -n istio-system $(kubectl -n istio-system get pods -l istio=ingressgateway -o jsonpath='{.items[0].metadata.name}') -- ls -al /etc/istio/ingressgateway-certs
+Reference link: https://istio.io/docs/tasks/traffic-management/secure-ingress/mount/ 
+
+
+
+
+
+
+
+
+Sample gateway file with certificate:
+
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: frontend
+spec:
+  selector:
+    istio: ingressgateway # use istio default controller
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      serverCertificate: /etc/istio/ingressgateway-certs/tls.crt  ###certificates
+      privateKey: /etc/istio/ingressgateway-certs/tls.key       ##key file
+    hosts:
+    - "staging-analytics.firstsource.com"                            ##domain name
+
+Sample virtual service yaml file:
+
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: frontend                                                            ## Any name 
+spec:
+  hosts:
+  - "staging-analytics.firstsource.com"                             ##domain name
+  gateways:
+  - frontend                                                                      ## gateway name
+  http:
+  - match:
+    - uri:
+        prefix: /api/         #prefix added in the code that links to miscroservice
+    route:
+    - destination:
+        host: backend-st          # service name of microservice (backend)
+        port:
+          number: 3000           # port no
+  - match:
+    - uri:
+        prefix: /generate_predictions  #prefix of microservice
+    route:
+    - destination:
+        host: classifai-st        # service name
+        port:
+          number: 5000        # port no
+   - route:
+    - destination:
+        host: frontend-st
+        port:
+          number: 3006
+
+If we would want to have one more microservice, add one block like the below one:
+
+- match:
+    - uri:
+        prefix: /specific_prefix  #prefix of microservice
+    route:
+    - destination:
+        host: service_name        # service name
+        port:
+          number: 5000        # port no
+
+
+Adding headers in istio
+
+Security headers:
+
+HTTP security headers are a fundamental part of website security. Upon implementation, they protect you against the types of attacks that your site is most likely to come across. These headers protect against XSS, code injection, clickjacking, etc. 
+
+
+Steps:
+
+1) Deploy the demo adapter:
+
+kubectl run keyval --image=gcr.io/istio-testing/keyval:release-1.1 --namespace istio-system --port 9070 --expose
+
+2) Enable the keyval adapter by deploying its template and configuration descriptors:
+
+$ kubectl apply -f samples/httpbin/policy/keyval-template.yaml
+$ kubectl apply -f samples/httpbin/policy/keyval.yaml
+
+         (sudo  curl -L https://istio.io/downloadIstio | sh -)           
+
+
+3) kubectl apply -f - <<EOF
+apiVersion: config.istio.io/v1alpha2
+kind: handler
+metadata:
+  name: keyval
+  namespace: istio-system
+spec:
+  adapter: keyval
+  connection:
+    address: keyval:9070
+EOF
+
+4) kubectl apply -f - <<EOF
+apiVersion: config.istio.io/v1alpha2
+kind: instance
+metadata:
+  name: keyval
+  namespace: istio-system
+spec:
+  template: keyval
+EOF
+
+5) Create a rule for the demo adapter:
+
+kubectl apply -f - <<EOF
+apiVersion: config.istio.io/v1alpha2
+kind: rule
+metadata:
+  name: keyval
+  namespace: istio-system
+spec:
+  actions: []
+  requestHeaderOperations:
+  - name: user-group
+    values: [ x.output.value ]
+EOF
+
+6) Apply the headers: 
+
+kubectl apply -f - <<EOF
+apiVersion: config.istio.io/v1alpha2
+kind: rule
+metadata:
+  name: keyval
+  namespace: istio-system
+spec:
+  actions: []
+  responseHeaderOperations:
+  - name: X-Frame-Options
+    values: ['"deny"']
+  - name: X-XSS-Protection
+    values: ['"1; mode=block"']
+  - name: Content-Security-Policy
+    values: ['"frame-ancestors none;"']
+  - name: X-Content-Type-Options
+    values: ['"nosniff"']
+  - name: Strict-Transport-Security
+    values: ['"max-age=31536000"']
+EOF
+
+----------------------------------------------------
+To enable storage bucket cors
+https://cloud.google.com/storage/docs/configuring-cors
+
+
+
+
+
+
+
+
+
+
+
+
+
