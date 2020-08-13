@@ -74,7 +74,7 @@ spec:
    spec:
      containers:
        - name: ror
-         image: gcr.io/firstanalytics/firstsource-backend-stag:v1.0.0  #image path from GCR
+         image: gcr.io/firstsource-backend-stag:v1.0.0  #image path from GCR
          imagePullPolicy: Always
          resources:
           requests:
